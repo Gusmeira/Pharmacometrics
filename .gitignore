@@ -1,0 +1,6 @@
+# Ignore .env file
+.env
+
+# Ignore env/ directory
+env/
+Rowland & Tozer - Clinical PKPD/__pycache__/
