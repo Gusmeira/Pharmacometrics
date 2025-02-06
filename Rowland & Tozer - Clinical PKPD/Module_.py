@@ -37,6 +37,77 @@ def henderson_hasselbalch(pKa=None, pH=None, fraction=None, type:str='ph', acid=
         return pH-np.log10(fraction)
     if (type == 'fraction'):
         return 10**(pH-pKa)
+    
+
+
+# RESIDUAL METHOD ====================================================================================
+def residual_method(df:pd.DataFrame, elimination_end:int=5, absorption_start:int=5, show_fig:bool=True, parameters:bool=True) -> pd.DataFrame:
+
+    fig = plotly.subplots.make_subplots(cols=2, rows=1,
+        subplot_titles=['C x t','Residual Method']
+    )
+
+    # Conventional Plot
+    fig.add_trace(trace=go.Scatter(
+        x=df['t'], y=df['C'], mode='lines+markers', name='C x t',
+        marker=dict(color='rgba(164,31,54,1)', size=8), line=dict(color='rgba(0,0,0,1)', shape='spline', smoothing=0.7)
+    ), col=1, row=1)
+
+    # Semi Log Plot
+    fig.add_trace(trace=go.Scatter(
+        x=df['t'], y=df['C'], mode='markers', name='semilog',
+        marker=dict(color='rgba(0,0,0,1)', size=8),
+    ), col=2, row=1)
+
+    # Regression for Elimiation
+    df['log10(C)'] = np.log10(df['C'])
+    slope, intercept = np.polyfit(df['t'][-elimination_end:],df['log10(C)'][-elimination_end:],1)
+    df['elimination line'] = 10**(df['t']*slope+intercept)
+    fig.add_trace(trace=go.Scatter(
+        x=df['t'], y=df['elimination line'], mode='lines', name='elimination',
+        line=dict(color='rgba(164,31,54,1)'),
+    ), col=2, row=1)
+
+    # Residual Method
+    df['residual'] = df['elimination line'] - df['C']
+    absorption_slope, absorption_intercept = np.polyfit(df['t'][:absorption_start], np.log10(np.abs(df['residual']))[:absorption_start], 1)
+    fig.add_trace(trace=go.Scatter(
+        x=df['t'][:absorption_start], y=df['residual'][:absorption_start], mode='lines+markers', name='residual',
+        line=dict(color='rgba(164,31,54,1)', dash='dash'), marker=dict(color='rgba(164,31,54,1)', size=8)
+    ), col=2, row=1)
+
+    if show_fig:
+        main_subplot_layout(fig, title='Absorption Kinetics', x='t [h]', y='C [mg/L]', yaxis2_type="log").show()
+
+    if parameters:
+        k = round(-slope * np.log(10),2)
+        half_life = round(np.log(2)/k,2)
+        ka = round(-absorption_slope*np.log(10),2)
+        absorption_half_life = round(np.log(2)/ka,2)
+        AUC = round(trapezoidal_rule(x=df['t'], y=df['C']),2)
+        return {'k':k, 'ka':ka, 't(1/2)':half_life, 't(1/2)(absorption)':absorption_half_life, 'AUC':AUC}
+
+    return df
+
+
+
+# WAGNER-NELSON METHOD ===============================================================================
+def wagner_nelson(df:pd.DataFrame, half_life:float=None, k:float=None) -> pd.DataFrame:
+
+    if (k is None):
+        k = np.log(2)/half_life
+    if (half_life is None):
+        half_life = np.log(2)/half_life
+
+    df['AUC'] = 0.
+    for i in range(1, len(df)):
+        df.loc[i, 'AUC'] = round(df.loc[i - 1, 'AUC'] + 0.5 * (df.loc[i, 'C'] + df.loc[i - 1, 'C']) * (df.loc[i, 't'] - df.loc[i - 1, 't']),2)
+    df['A(ab)/V'] = round(df['C'] + k*df['AUC'],2)
+    df['Bioavailable Drug Absorbed'] = round(df['A(ab)/V']/(k*df['AUC'][-1:].values),3)
+    df['Bioavailable Drug Remained to be Absorbed'] = round(1-df['Bioavailable Drug Absorbed'],3)
+
+    return df
+
 
 
 # EQUATIONS ==========================================================================================
@@ -89,6 +160,29 @@ class Equations:
         self.volume_distribution_albumin = Math(r'\text{V} = 7.5 + \left( 7.5 + \frac{\text{V}_\text{R}}{f\text{u}_\text{R}} \right) \cdot f\text{u}')
         self.new_fu_estimation = Math(r"\dfrac{f\text{u}'}{f\text{u}} \approx \dfrac{\text{P}_\text{t}}{\text{P}_\text{t}'}")
         self.fu_r = Math(r"f\text{u}_\text{R} = \frac{\text{V}_\text{R}}{(\text{V} - 7.5) \cdot \frac{1}{f\text{u}}}")
+        if print_all == True:
+            for attr, value in vars(self).items():
+                if isinstance(value, Math):
+                    if show_attr == True: display(attr, value); print()
+                    else: display(value)
+
+    def chap_5(self, print_all=False, show_attr=False):
+        self.renal_clearance_blood = Math(r'\text{CL}_{\text{R}} = \text{Q}_{\text{R}} \cdot \text{E}_{\text{R}}')
+        self.renal_clearance_hepatic = Math(r'\text{CL}_{\text{H}} = \text{Q}_{\text{H}} \cdot \text{E}_{\text{H}}')
+        self.rate_of_elimination = Math(r'\text{Rate of Elimination} = \text{CL} \cdot \text{C} = \text{CL}_\text{b} \cdot \text{C}_\text{b} = \text{CLu} \cdot \text{Cu}')
+        self.clearance_b = Math(r'\text{CL}_{\text{b}} = \text{CL} \cdot \left(\frac{\text{C}}{\text{C}_{\text{b}}}\right)')
+        self.clearance_u = Math(r'\text{CLu} = \frac{\text{CL}}{f\text{u}}')
+        self.clearance = Math(r'\text{CL} = \text{CL}_{\text{R}} + \text{CL}_{\text{H}}')
+        self.clearance_hepatic_blood = Math(r'\text{CL}_{\text{b,H}} = \text{Q}_{\text{H}} \cdot \left[\frac{f\text{u}_\text{b} \cdot \text{CL}_\text{int}}{\text{Q}_\text{H} + f\text{u}_\text{b} \cdot \text{CL}_\text{int}}\right]')
+        self.extraction_ratio_hepatic = Math(r'\text{E}_{\text{H}} = \frac{f\text{u}_{\text{b}} \cdot \text{CL}_{\text{int}}}{\text{Q}_{\text{H}} + f\text{u}_{\text{b}} \cdot \text{CL}_{\text{int}}}')
+        self.biliary_clearance = Math(r'\text{Biliary Clearance} = \frac{(\text{Bile Flow}) \cdot (\text{Concentration in Bile})}{\text{Concentration in Plasma}}')
+        self.renal_clearance_rate = Math(r'\text{CL}_{\text{R}} = (1 - \text{F}_{\text{R}}) \cdot \left[\frac{\text{Rate of Filtration}}{\text{C}} + \frac{\text{Rate of Secretion}}{\text{C}}\right] = (1 - \text{F}_{\text{R}}) \cdot \left[\text{CL}_{\text{f}} + \text{CL}_{\text{s}}\right]')
+        self.renal_clearance_excretion = Math(r'\text{CL}_{\text{R}} = \frac{\text{Rate of Urinary Excretion}}{\text{Plasma Concentration}}')
+        self.renal_clearance_fu = Math(r'\text{Renal Clearance} = f\text{u} \cdot \text{Urine Flow}')
+        self.k_cl_v = Math(r'\text{k} = \frac{\text{Rate of Elimination}}{\text{Amount in Body}} = \frac{\text{CL}}{\text{V}}')
+        self.half_life = Math(r'\text{t}_{1/2} = \frac{\ln 2}{\text{k}} = \frac{\ln 2 \cdot \text{V}}{\text{CL}}')
+        self.clearance_volume_relation = Math(r'\text{k} = \frac{\text{CL}}{\text{V}} = \frac{\text{CL}_{\text{b}}}{\text{V}_{\text{b}}} = \frac{\text{CLu}}{\text{Vu}}')
+        self.half_life_clearance_relation = Math(r'\text{t}_{1/2} = \frac{\ln 2 \cdot \text{V}}{\text{CL}} = \frac{\ln 2 \cdot \text{V}_{\text{b}}}{\text{CL}_{\text{b}}} = \frac{\ln 2 \cdot \text{Vu}}{\text{CLu}}')
         if print_all == True:
             for attr, value in vars(self).items():
                 if isinstance(value, Math):
